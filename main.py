@@ -1,112 +1,82 @@
+import argparse
 import os
+import sys
+
+from call_function import available_functions, call_function
+from config import MAX_ITERS
 from dotenv import load_dotenv
 from openai import OpenAI
-import argparse
+
 from prompts import system_prompt
-from call_function import available_functions, call_function
-import json
 
-# 1. Cargar las variables de entorno desde el archivo .env
-load_dotenv()
 
-# 2. Inicializar el cliente conectándolo a OpenRouter (o proveedor compatible)
-# Obtiene el valor de OPENROUTER_API_KEY; devuelve None si la variable no existe
-api_key = os.environ.get("OPENROUTER_API_KEY")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="AI Code Assistant")
+    parser.add_argument("user_prompt", type=str, help="Prompt to send to the LLM")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    args = parser.parse_args()
 
-# Comprueba si la clave no se encontró (nota: lo idiomático en Python es "is None")
-if api_key is None:
-    raise RuntimeError("Runtime error")
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
 
-# Crea el cliente de OpenAI
-client = OpenAI(
-    # Redirige las peticiones a OpenRouter en lugar de a los servidores de OpenAI y Pasa la clave de API para autenticarse
-    base_url = "https://openrouter.ai/api/v1",
-    api_key=api_key, 
-)
-
-# Crea el analizador de argumentos de línea de comandos, con una descripción del programa
-parser = argparse.ArgumentParser(description="Chatbot")
-
-# Define un argumento posicional obligatorio: el texto (prompt) que escribe el usuario
-parser.add_argument("user_prompt", type=str, help="User prompt")
-
-# Define una opción opcional --verbose; al ser store_true vale True si se incluye y False si no
-parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-
-# Lee y procesa los argumentos recibidos en la terminal, guardándolos en el objeto args
-args = parser.parse_args()
-
-# Crea el historial de la conversación: una lista de mensajes con su rol y contenido
-messages = [
-    # Mensaje de sistema: define el comportamiento/instrucciones generales del modelo
-    {"role": "system", "content": system_prompt},
-    # Mensaje del usuario: la pregunta o petición recibida por línea de comandos   
-    {"role": "user", "content": args.user_prompt},
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": args.user_prompt},
     ]
+    if args.verbose:
+        print(f"User prompt: {args.user_prompt}\n")
 
-# Define una función que encapsula la llamada al modelo
-def generate_content(client, messages):
-    # Envía la conversación al endpoint de chat completions y guarda la respuesta
+    for _ in range(MAX_ITERS):
+        try:
+            final_response = generate_content(client, messages, args.verbose)
+            if final_response:
+                print("Final response:")
+                print(final_response)
+                return
+        except Exception as e:
+            print(f"Error in generate_content: {e}")
+
+    print(f"Maximum iterations ({MAX_ITERS}) reached")
+    sys.exit(1)
+
+
+def generate_content(client: OpenAI, messages: list, verbose: bool) -> str | None:
     response = client.chat.completions.create(
-        # Modelo a usar: el enrutador de modelos gratuitos de OpenRouter
         model="openrouter/free",
-        # Historial de mensajes que el modelo debe procesar
         messages=messages,
-        # Lista de herramientas (funciones) que el modelo puede decidir invocar
         tools=available_functions,
     )
-    # Devuelve el objeto de respuesta completo
-    return response
+    if not response.usage:
+        raise RuntimeError("API response appears to be malformed")
 
-# Llama a la función anterior y almacena la respuesta del modelo
-response = generate_content(client, messages)
+    if verbose:
+        print("Prompt tokens:", response.usage.prompt_tokens)
+        print("Response tokens:", response.usage.completion_tokens)
 
-# Verifica si la API devolvió datos de uso (consumo de tokens).
-if response.usage is not None:
-    # Solo muestra la información si el usuario activó --verbose
-    if args.verbose:
-        # Muestra el prompt original del usuario
-        print(f"User prompt: {args.user_prompt}")
-        # Muestra cuántos tokens consumió la entrada (prompt)
-        print(f"Prompt tokens: {response.usage.prompt_tokens}")
-        # Muestra cuántos tokens generó el modelo en su respuesta
-        print(f"Response tokens: {response.usage.completion_tokens}")
-# Si usage es None (la API no informó del consumo)
-else:
-    # Lanza un error indicando que falta la información de tokens
-    raise RuntimeError("Error: La API no devolvió información sobre el uso de tokens (response.usage es None).")
+    message = response.choices[0].message
+    messages.append(message)
 
-# Extrae el mensaje del modelo: toma la primera opción (choices[0]) de la respuesta
-message = response.choices[0].message
+    if not message.tool_calls:
+        return message.content
 
-# Si el modelo pidió ejecutar una o más herramientas (la lista no es vacía ni None)
-if message.tool_calls:
-    # Recorre cada llamada a herramienta solicitada por el modelo
     for tool_call in message.tool_calls:
-        # Llamar a nuestra función encargada y asignar el resultado
-        # Ejecuta la herramienta pedida; verbose controla si imprime información adicional
-        result_message = call_function(tool_call, verbose=args.verbose)
-        
-        # Validar que el contenido devuelto no esté vacío
-        # Si el diccionario no tiene "content" o está vacío, se considera un fallo
+        if tool_call.type != "function":
+            continue
+        result_message = call_function(tool_call, verbose)
         if not result_message.get("content"):
-            # Lanza un error indicando el id de la llamada que falló
-            raise RuntimeError(f"Error: Tool message content is empty for tool call {tool_call.id}")
-            
-        # Si estamos en modo verbose, imprimir el resultado de la función
-        if args.verbose:
-            # Muestra el contenido devuelto por la herramienta, precedido de una flecha
+            raise RuntimeError(f"Empty function response for {tool_call.function.name}")
+        if verbose:
             print(f"-> {result_message['content']}")
-            
-        # Código comentado (desactivado), conservado como referencia:
-        # function_args = json.loads(tool_call.function.arguments or "{}")  # convertiría los argumentos JSON de la llamada en un diccionario
-        # print(f"Calling function: {tool_call.function.name}({function_args})")  # mostraría el nombre de la función y sus argumentos
-# Si no hubo llamadas a herramientas pero el modelo devolvió texto
-elif message.content:
-    # Imprime la respuesta de texto del modelo
-    print(message.content)
-# Si no hay ni herramientas ni texto
-else:
-    # Informa de que el modelo no devolvió nada útil
-    print("El modelo no devolvió contenido ni llamadas a funciones.")
+        messages.append(result_message)
 
+    return None
+
+
+if __name__ == "__main__":
+    main()

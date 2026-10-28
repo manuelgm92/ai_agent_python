@@ -5,3 +5,6 @@
 # para evitar desbordamientos de memoria o costos excesivos en la API.
 
 MAX_CHARS = 10000
+MAX_ITERS = 20
+WORKING_DIR = "./calculator"
+

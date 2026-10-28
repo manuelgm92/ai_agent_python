@@ -6,71 +6,54 @@ def run_python_file(
     working_directory: str, file_path: str, args: list[str] | None = None
 ) -> str:
     try:
-            
-        working_directory_abs_path = os.path.abspath(working_directory)
-        
-        target_dir = os.path.join(working_directory_abs_path, file_path)
-        target_dir = os.path.normpath(target_dir)
-        
-        if os.path.commonpath([working_directory_abs_path, target_dir]) != working_directory_abs_path:
+        abs_working_dir = os.path.abspath(working_directory)
+        abs_file_path = os.path.normpath(os.path.join(abs_working_dir, file_path))
+        if os.path.commonpath([abs_working_dir, abs_file_path]) != abs_working_dir:
             return f'Error: Cannot execute "{file_path}" as it is outside the permitted working directory'
-        
-        if not os.path.isfile(target_dir):
+        if not os.path.isfile(abs_file_path):
             return f'Error: "{file_path}" does not exist or is not a regular file'
-        
-        if not target_dir.endswith(".py"): 
+        if not abs_file_path.endswith(".py"):
             return f'Error: "{file_path}" is not a Python file'
-        
-        command = ["python", target_dir]
-        
+        command = ["python", abs_file_path]
         if args:
             command.extend(args)
-        
         result = subprocess.run(
-            command, 
-            cwd=working_directory_abs_path,
+            command,
+            cwd=abs_working_dir,
             capture_output=True,
-            text=True, 
-            timeout=30
-            )
-        
-        output_parts = []
-        
+            text=True,
+            timeout=30,
+        )
+        output: list[str] = []
         if result.returncode != 0:
-            output_parts.append(f"Process exited with code {result.returncode}")
+            output.append(f"Process exited with code {result.returncode}")
         if not result.stdout and not result.stderr:
-            output_parts.append(f"No output produced")
-        else:
-            # 3. Si hay stdout, incluirlo con el prefijo STDOUT:
-            if result.stdout:
-                output_parts.append(f"STDOUT:\n{result.stdout}")
-            # Si hay stderr, incluirlo con el prefijo STDERR:
-            if result.stderr:
-                output_parts.append(f"STDERR:\n{result.stderr}")
-        
-        return "\n".join(output_parts)
-    
+            output.append("No output produced")
+        if result.stdout:
+            output.append(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            output.append(f"STDERR:\n{result.stderr}")
+        return "\n".join(output)
     except Exception as e:
         return f"Error: executing Python file: {e}"
+
 
 schema_run_python_file = {
     "type": "function",
     "function": {
-        "name": "run_python_file",  # <--- Actualizado al nombre correcto
-        "description": "Execute or run a Python script file in the working directory and return its output. Use this when the user asks to run, execute, or launch a python file.",
+        "name": "run_python_file",
+        "description": "Executes a specified Python file within the working directory and returns its output",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path to the Python file to execute, relative to the working directory",
+                    "description": "Path to the Python file to run, relative to the working directory",
                 },
                 "args": {
                     "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "Optional list of command-line arguments to pass to the script",
+                    "items": {"type": "string"},
+                    "description": "Optional list of arguments to pass to the Python script",
                 },
             },
             "required": ["file_path"],
